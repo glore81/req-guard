@@ -34,21 +34,17 @@ def run_pipeline(doc: Document, llm=None, model_name: str = "stub") -> Result:
     reqs = parser.run(doc, llm)
     _log(f"  Найдено требований: {len(reqs)}")
 
-    # Пакетная проверка отдельных требований
-    _log("Пакетная проверка отдельных требований...")
-
+    # Проверка каждого требования отдельно
+    _log("Проверка отдельных требований...")
+    # Пачками по 10: в ~10 раз меньше запросов к API (бесплатный лимит)
     req_defects = requirement_checker.run_batch(
-        reqs,
-        llm,
-        defect_counter,
-        batch_size=10
+        reqs, llm, defect_counter, doc_text=doc.text, batch_size=10
     )
-
-    _log(f"  Проверено требований: {len(reqs)}")
     _log(f"  Найдено дефектов отдельных требований: {len(req_defects)}")
+
     # Проверка набора требований (противоречия, дубли)
     _log("Проверка набора требований...")
-    set_defects = set_checker.run(reqs, llm, defect_counter)
+    set_defects = set_checker.run(reqs, llm, defect_counter, doc_text=doc.text)
     _log(f"  Найдено дефектов набора: {len(set_defects)}")
 
     # Генерация уточняющих вопросов

@@ -1,4 +1,3 @@
-
 """Агент извлечения требований из документа."""
 
 from __future__ import annotations
@@ -50,6 +49,26 @@ PROMPT = """
 
 - Извлекай требования из таблиц,
   API-параметров и HTTP-статусов.
+
+- ОБЯЗАТЕЛЬНО извлеки (если есть во фрагменте):
+  * цели и каждое предложение функциональных
+    и нефункциональных требований отдельно;
+  * каждую строку таблицы критериев приёмки;
+  * каждую строку таблиц параметров запроса
+    и ответа;
+  * строки описания метода API (Description,
+    REST type, Authorization, Request URL);
+  * пункты Request body (Content-Type, тело);
+  * правило успешности ответа и каждый
+    HTTP-статус с его описанием;
+  * предложения-пояснения в разделах статусов
+    (например, какой код возвращается в особом
+    случае) и строки «или» между примерами.
+
+- НЕ извлекай: шапку задачи (наименование,
+  продукт, роли, JIRA), чек-лист ревью
+  требований, блок согласующих, сами JSON-примеры
+  ответов без пояснений.
 
 - Не считай заголовки и обычные пояснения
   самостоятельными требованиями.
@@ -123,7 +142,7 @@ PROMPT = """
 """
 
 
-CHUNK_SIZE = 12000
+CHUNK_SIZE = 3500  # ~3 фрагмента на типичное ТЗ: модель не теряет строки
 
 
 def run(
@@ -184,11 +203,19 @@ def run(
                     # Повторная выдача той же цитаты.
                     continue
 
-                print(
-                    f"[parser] пропускаю требование — "
-                    f"цитата не найдена в документе: {quote!r}"
-                )
-                continue
+                # Модель могла заменить разделители таблицы "|" на табы,
+                # склеить пробелы или написать «е» вместо «ё».
+                # Ищем с допуском и берём ТОЧНЫЙ текст из документа.
+                position, matched = _fuzzy_find(chunk, quote, search_start)
+
+                if position == -1:
+                    print(
+                        f"[parser] пропускаю требование — "
+                        f"цитата не найдена в документе: {quote!r}"
+                    )
+                    continue
+
+                quote = matched
 
             used_positions[quote] = position + len(quote)
 
@@ -211,6 +238,11 @@ def run(
                 )
             )
 
+    # Таблицы критериев приёмки (MD/TXT) разбираем кодом, без модели:
+    # модель их стабильно пропускала, а код не ошибается в цитатах и строках.
+    if not doc.is_pdf:
+        result = _merge_table_requirements(result, _acceptance_rows(doc))
+
     if not result:
         raise ValueError(
             "Parser: не извлечено ни одного требования"
@@ -219,11 +251,125 @@ def run(
     return result
 
 
+_ACCEPTANCE_HEADINGS = ("критерии приемки", "критерии приёмки", "acceptance criteria")
+
+
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _acceptance_rows(doc: Document) -> list[Requirement]:
+    """Строки таблиц из разделов «Критерии приёмки» -> требования.
+    text: «Критерий приёмки N: <колонка> — <значение>; ...» (названия колонок
+    берутся из шапки таблицы); quote: строка таблицы дословно; line: её номер."""
+    rows: list[Requirement] = []
+    lines = doc.text.splitlines()
+    in_section = False
+    header: list[str] | None = None
+    number = 0
+
+    for i, raw in enumerate(lines, start=1):
+        line = raw.strip()
+
+        if line.startswith("#"):
+            in_section = any(h in line.lower() for h in _ACCEPTANCE_HEADINGS)
+            header = None
+            continue
+
+        if not in_section:
+            continue
+
+        if not line.startswith("|"):
+            header = None if line else header  # таблица закончилась
+            continue
+
+        cells = _cells(line)
+
+        if header is None:
+            header = cells                     # шапка таблицы
+            continue
+
+        if all(re.fullmatch(r":?-{3,}:?", c) for c in cells if c):
+            continue                           # строка-разделитель | :--- |
+
+        if not any(cells):
+            continue
+
+        number += 1
+        pairs = [
+            f"{name} — {value}" if name else value
+            for name, value in zip(header, cells) if value
+        ]
+        rows.append(Requirement(
+            id="",
+            doc_id=None,
+            text=f"Критерий приёмки {number}: " + "; ".join(pairs),
+            quote=line,
+            page=None,
+            line=i,
+        ))
+
+    return rows
+
+
+def _merge_table_requirements(
+        found: list[Requirement],
+        table_reqs: list[Requirement]
+) -> list[Requirement]:
+    """Добавляет строки таблиц; если модель уже выделила ту же строку —
+    её вариант заменяется табличным. Затем ID перенумеровываются
+    в порядке документа."""
+    if not table_reqs:
+        return found
+
+    table_lines = {t.line for t in table_reqs}
+    kept = [r for r in found if r.line not in table_lines]
+    merged = sorted(kept + table_reqs, key=lambda r: (r.line or 0))
+
+    for n, r in enumerate(merged, start=1):
+        r.id = f"R-{n:03d}"
+
+    return merged
+
+
+_SEPARATORS = r"[\s|]+"
+
+
+def _fuzzy_find(text: str, quote: str, start: int = 0):
+    """Ищет цитату, допуская другие разделители (пробелы, табы, "|")
+    и замену «ё»↔«е». Возвращает (позиция, точный текст из документа)
+    или (-1, None). Слова и их порядок должны совпадать."""
+    # Обратные кавычки (`код`) модель часто опускает или добавляет —
+    # убираем их из цитаты и разрешаем необязательными в документе.
+    tokens = [t.strip("`") for t in re.split(_SEPARATORS, quote)]
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return -1, None
+
+    def token_pattern(token: str) -> str:
+        out = []
+        for ch in token:
+            if ch in "её":
+                out.append("[её]")
+            elif ch in "ЕЁ":
+                out.append("[ЕЁ]")
+            else:
+                out.append(re.escape(ch))
+        return "".join(out)
+
+    pattern = _SEPARATORS.join("`?" + token_pattern(t) + "`?" for t in tokens)
+    m = re.compile(pattern).search(text, start)
+    if not m:
+        return -1, None
+    return m.start(), m.group(0)
+
+
 def _call_llm(llm, text: str) -> list[dict]:
 
     prompt = PROMPT.format(document=text)
 
-    raw = llm.call_json(prompt)
+    # temperature=0: парсер должен выделять одно и то же от прогона к прогону
+    raw = llm.call_json(prompt, temperature=0)
 
     # Поддерживаем массив и известные обёртки.
     if isinstance(raw, dict):
@@ -274,7 +420,10 @@ def _split_into_chunks(doc: Document):
 
     for line_number, line in enumerate(lines, start=1):
 
-        if current and len(current) + len(line) > CHUNK_SIZE:
+        # Новый фрагмент начинаем только на заголовке раздела —
+        # так таблица или список не разрываются посередине.
+        if (current and line.lstrip().startswith("#")
+                and len(current) + len(line) > CHUNK_SIZE):
 
             yield current, None, start_line
 

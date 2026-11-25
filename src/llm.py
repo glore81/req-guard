@@ -57,12 +57,13 @@ class LLM:
             http_options=types.HttpOptions(api_version="v1beta"),
         )
 
-    def call_json(self, prompt: str, retries: int = 4):
-        """Вызывает модель и возвращает распарсенный JSON (см. описание модуля)."""
+    def call_json(self, prompt: str, retries: int = 4, temperature: float = 0.2):
+        """Вызывает модель и возвращает распарсенный JSON (см. описание модуля).
+        temperature=0 — максимально повторяемый ответ (нужно парсеру)."""
         # Готовый ответ любой модели из цепочки — берём с диска.
         if self.use_cache:
             for model in self.models:
-                cache_file = self._cache_file(model, prompt)
+                cache_file = self._cache_file(model, prompt, temperature)
                 if cache_file.exists():
                     self.model = model
                     return json.loads(cache_file.read_text(encoding="utf-8"))
@@ -76,11 +77,11 @@ class LLM:
                 resp = self._client.models.generate_content(
                     model=model,
                     contents=prompt,
-                    config={"response_mime_type": "application/json", "temperature": 0.2},
+                    config={"response_mime_type": "application/json", "temperature": temperature},
                 )
                 result = _parse_json(resp.text)
                 if self.use_cache:
-                    cache_file = self._cache_file(model, prompt)
+                    cache_file = self._cache_file(model, prompt, temperature)
                     cache_file.parent.mkdir(parents=True, exist_ok=True)
                     cache_file.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
                 self.model = model  # запоминаем, какая модель реально ответила
@@ -137,8 +138,10 @@ class LLM:
         now = time.time()
         return any(m != model and self._bench.get(m, 0) <= now for m in self.models)
 
-    def _cache_file(self, model: str, prompt: str) -> Path:
-        key = hashlib.sha256(f"{model}::{prompt}".encode("utf-8")).hexdigest()
+    def _cache_file(self, model: str, prompt: str, temperature: float = 0.2) -> Path:
+        # Для температуры по умолчанию ключ прежний — старый кэш остаётся валидным.
+        raw = f"{model}::{prompt}" if temperature == 0.2 else f"{model}::t={temperature}::{prompt}"
+        key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         return CACHE_DIR / f"{key}.json"
 
 
