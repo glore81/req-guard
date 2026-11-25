@@ -13,17 +13,24 @@ def read_document(path: str) -> Document:
     if not p.exists():
         raise FileNotFoundError(f"Файл не найден: {path}")
     suffix = p.suffix.lower()
-    if suffix == ".pdf":
+    is_pdf = suffix == ".pdf"
+
+    if is_pdf:
         pages = _read_pdf(p)
+        # Для PDF чистим артефакты извлечения (склейка переносов, разрывов строк).
+        # Нумерация строк внутри PDF не используется (там работаем по page), поэтому
+        # склейка строк безопасна.
+        pages = [_clean_page(pg) for pg in pages]
+        text = "\n".join(pages)
     elif suffix in (".md", ".txt"):
-        pages = [p.read_text(encoding="utf-8")]
+        # ВАЖНО: текст НЕ очищаем и не склеиваем — для MD/TXT номер строки (line)
+        # должен точно соответствовать строке в исходном файле (считаем с 1).
+        text = p.read_text(encoding="utf-8")
+        pages = [text]
     else:
         raise ValueError(f"Неподдерживаемый формат: {suffix} (нужен .pdf, .md или .txt)")
 
-    # Нормализуем текст каждой страницы: убираем лишние переносы внутри слов
-    pages = [_clean_page(pg) for pg in pages]
-    text = "\n".join(pages)
-    return Document(name=p.name, text=text, pages=pages)
+    return Document(name=p.name, text=text, pages=pages, is_pdf=is_pdf)
 
 
 def _read_pdf(p: Path) -> list[str]:

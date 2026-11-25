@@ -72,8 +72,18 @@ def affected(d):
     return [d["req_id"]] + d.get("related_req_ids", [])
 
 
+def loc(o):
+    """Место в документе: страница и/или строка; page может быть null (Markdown)."""
+    parts = []
+    if o.get("page") is not None:
+        parts.append(f"стр. {o['page']}")
+    if o.get("line") is not None:
+        parts.append(f"строка {o['line']}")
+    return ", ".join(parts) or "место не указано"
+
+
 def quote_lines(d):
-    return [f"  - Цитата ({q['req_id']}, стр. {q.get('page', '—')}): «{q['quote']}»"
+    return [f"  - Цитата ({q['req_id']}, {loc(q)}): «{q['quote']}»"
             for q in d.get("quotes", [])]
 
 
@@ -100,11 +110,11 @@ def build_report(data: dict) -> str:
 
     # 2. Таблица требований
     L += ["## 2. Выделенные требования", "",
-          "| ID в отчёте | ID в документе | Стр. | Краткая формулировка | Цитата |",
+          "| ID в отчёте | ID в документе | Место | Краткая формулировка | Цитата |",
           "|---|---|---|---|---|"]
     for r in reqs:
         L.append(f"| {r['id']} | {esc(r.get('doc_id') or '(присвоен агентом)')} | "
-                 f"{r.get('page', '—')} | {esc(r.get('text', ''))} | {esc(r['quote'])} |")
+                 f"{loc(r)} | {esc(r.get('text', ''))} | {esc(r['quote'])} |")
     L.append("")
 
     # 3. Проверка отдельных требований
@@ -116,7 +126,7 @@ def build_report(data: dict) -> str:
             L += ["Нарушений не найдено.", ""]
             continue
         for d in ds:
-            L.append(f"- **{d.get('id', '?')}: {dtype(d)}** ({SEVERITY_RU[severity(d)]})")
+            L.append(f"- **{d['defect_id']}: {dtype(d)}** ({SEVERITY_RU[severity(d)]})")
             L += quote_lines(d)
             L.append(f"  - Почему это дефект: {d['explanation']}")
         L.append("")
@@ -126,7 +136,7 @@ def build_report(data: dict) -> str:
     if not set_defects:
         L += ["Нарушений на уровне набора не найдено.", ""]
     for d in set_defects:
-        L.append(f"- **{d.get('id', '?')}: {dtype(d)}** ({SEVERITY_RU[severity(d)]}), "
+        L.append(f"- **{d['defect_id']}: {dtype(d)}** ({SEVERITY_RU[severity(d)]}), "
                  f"затронуты: {', '.join(affected(d))}")
         L += quote_lines(d)
         L.append(f"  - Почему это дефект: {d['explanation']}")
@@ -136,7 +146,7 @@ def build_report(data: dict) -> str:
     L += ["## 5. Уточняющие вопросы автору документа", "",
           "| № | Дефект | Требования | Тип | Вопрос |", "|---|---|---|---|---|"]
     for i, d in enumerate(defects, 1):
-        L.append(f"| {i} | {d.get('id', '?')} | {', '.join(affected(d))} | {dtype(d)} | {esc(d.get('question', ''))} |")
+        L.append(f"| {i} | {d['defect_id']} | {', '.join(affected(d))} | {dtype(d)} | {esc(d.get('question', ''))} |")
     L.append("")
 
     # 6. Сводка
@@ -149,9 +159,9 @@ def build_report(data: dict) -> str:
     if crit:
         L += ["Критичные дефекты:", ""]
         for d in crit:
-            q = "; ".join(f"«{x['quote']}» ({x['req_id']}, стр. {x.get('page', '—')})"
+            q = "; ".join(f"«{x['quote']}» ({x['req_id']}, {loc(x)})"
                           for x in d.get("quotes", []))
-            L.append(f"- {d.get('id', '?')} — {dtype(d)}: {q}")
+            L.append(f"- {d['defect_id']} — {dtype(d)}: {q}")
         L.append("")
 
     # 7. Итог
@@ -161,7 +171,7 @@ def build_report(data: dict) -> str:
               f"найдено критичных дефектов: {len(crit)}.", "",
               "Исправить в первую очередь:", ""]
         for i, d in enumerate(crit, 1):
-            L.append(f"{i}. {d.get('id', '?')} ({', '.join(affected(d))}) — {dtype(d)}: {d['explanation']}")
+            L.append(f"{i}. {d['defect_id']} ({', '.join(affected(d))}) — {dtype(d)}: {d['explanation']}")
     else:
         L.append("Критичных дефектов нет, разработку начинать можно; "
                  "незначительные замечания желательно закрыть параллельно.")

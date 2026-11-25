@@ -2,9 +2,9 @@
 
 Формат JSON на выходе pipeline:
   meta:         {document, date, model, agent_version}
-  requirements: [{id, doc_id|null, page, text, quote}]
-  defects:      [{id, req_id, related_req_ids, defect_type,
-                  quotes: [{req_id, page, quote}],
+  requirements: [{id, doc_id|null, page|null, line?, text, quote}]
+  defects:      [{defect_id, req_id, related_req_ids, defect_type,
+                  quotes: [{req_id, page|null, line?, quote}],
                   explanation, question}]
 
 Серьёзность НЕ хранится в JSON — выводится из defect_type в report.py.
@@ -50,7 +50,8 @@ class Requirement:
     text: str                     # Краткая формулировка (для таблицы соответствия)
     quote: str                    # Дословная цитата из документа
     doc_id: Optional[str] = None  # ID из самого документа (Ф-1, НФ-1...)
-    page: Optional[int] = None
+    page: Optional[int] = None    # Страница (PDF), null для MD/TXT
+    line: Optional[int] = None    # Номер строки (с 1), null для PDF
 
 
 @dataclass
@@ -58,6 +59,7 @@ class Quote:
     """Одна цитата-доказательство дефекта."""
     req_id: str                   # К какому требованию относится
     page: Optional[int] = None    # Страница (заполняет верификатор)
+    line: Optional[int] = None    # Номер строки (с 1)
     quote: str = ""               # Дословная цитата
 
 
@@ -85,6 +87,7 @@ class Document:
     name: str
     text: str                     # Полный текст
     pages: list[str]              # Текст по страницам
+    is_pdf: bool = True           # True = page-based, False = line-based (MD/TXT)
 
 
 @dataclass
@@ -113,17 +116,24 @@ class Result:
                 "agent_version": self.passport.agent_version,
             },
             "requirements": [
-                {"id": r.id, "doc_id": r.doc_id, "page": r.page,
-                 "text": r.text, "quote": r.quote}
+                {k: v for k, v in [
+                    ("id", r.id), ("doc_id", r.doc_id), ("page", r.page),
+                    ("line", r.line), ("text", r.text), ("quote", r.quote),
+                ] if v is not None or k in ("id", "text", "quote")}
                 for r in self.requirements
             ],
             "defects": [
                 {
-                    "id": d.id, "req_id": d.req_id,
+                    "defect_id": d.id, "req_id": d.req_id,
                     "related_req_ids": d.related_req_ids,
                     "defect_type": d.defect_type,
-                    "quotes": [{"req_id": q.req_id, "page": q.page, "quote": q.quote}
-                               for q in d.quotes],
+                    "quotes": [
+                        {k: v for k, v in [
+                            ("req_id", q.req_id), ("page", q.page),
+                            ("line", q.line), ("quote", q.quote),
+                        ] if v is not None or k in ("req_id", "quote")}
+                        for q in d.quotes
+                    ],
                     "explanation": d.explanation,
                     "question": d.question,
                 }

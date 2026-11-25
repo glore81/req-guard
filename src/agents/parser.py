@@ -125,12 +125,13 @@ def _split_into_chunks(doc: Document) -> list[str]:
 def _stub(doc: Document) -> list[Requirement]:
     """Парсер без LLM: паттерн-матчинг для типичных ТЗ.
     Находит: Ф-*, НФ-*, пронумерованные пункты, строки с ключевыми словами,
-    строки таблиц с параметрами API, критерии приёмки."""
+    строки таблиц с параметрами API, критерии приёмки.
+    Для MD/TXT заполняет line (с 1), для PDF — page."""
     reqs = []
     idx = 1
     seen = set()
 
-    def _add(text: str, quote: str, doc_id=None):
+    def _add(text: str, quote: str, doc_id=None, line_num=None):
         nonlocal idx
         norm = re.sub(r"\s+", " ", quote).strip().lower()
         if norm in seen or len(norm) < 15:
@@ -138,6 +139,8 @@ def _stub(doc: Document) -> list[Requirement]:
         seen.add(norm)
         reqs.append(Requirement(
             id=f"R-{idx:03d}", text=text[:200], quote=quote, doc_id=doc_id,
+            page=None if not doc.is_pdf else None,
+            line=line_num if not doc.is_pdf else None,
         ))
         idx += 1
 
@@ -147,22 +150,24 @@ def _stub(doc: Document) -> list[Requirement]:
         if not line:
             continue
 
+        ln = i + 1  # строки с 1
+
         # 1. Пункты вида "* **Ф-1.** ..." или "Ф-1. ..."
         m = re.match(r"^\*?\s*\*?\*?(Ф-\d+)\.\*?\*?\s*(.+)", line)
         if m:
-            _add(m.group(2), m.group(2), doc_id=m.group(1))
+            _add(m.group(2), m.group(2), doc_id=m.group(1), line_num=ln)
             continue
 
         # 2. Нумерованные пункты в логике API: "1. Проверить..."
         m2 = re.match(r"^(\d+)\.\s+(.{15,})", line)
         if m2:
-            _add(m2.group(2), m2.group(2))
+            _add(m2.group(2), m2.group(2), line_num=ln)
             continue
 
         # 3. HTTP-статусы: "**200.** Ответ..."
         m3 = re.match(r"^\*?\*?(\d{3})\.\*?\*?\s*(.+)", line)
         if m3:
-            _add(f"HTTP {m3.group(1)}: {m3.group(2)}", line)
+            _add(f"HTTP {m3.group(1)}: {m3.group(2)}", line, line_num=ln)
             continue
 
         # 4. Строки с ключевыми словами требований
@@ -173,7 +178,7 @@ def _stub(doc: Document) -> list[Requirement]:
                      "при достижении", "при ошибке", "при изменении",
                      "не используются", "не используется"]
         if any(kw in lower for kw in keywords) and len(line) > 20:
-            _add(line, line)
+            _add(line, line, line_num=ln)
             continue
 
         # 5. Строки таблиц с параметрами (| param | format | ...)
@@ -182,14 +187,14 @@ def _stub(doc: Document) -> list[Requirement]:
             if len(cells) >= 3 and cells[0].startswith("`"):
                 param_name = cells[0].strip("`")
                 desc = cells[-2] if len(cells) > 2 else ""
-                _add(f"Параметр {param_name}: {desc}", line)
+                _add(f"Параметр {param_name}: {desc}", line, line_num=ln)
 
     # Если совсем ничего — берём первые строки
     if not reqs:
-        for l in lines:
+        for j, l in enumerate(lines):
             l = l.strip()
             if l and not l.startswith("#") and len(l) > 15:
-                _add(l[:120], l)
+                _add(l[:120], l, line_num=j + 1)
                 if idx > 10:
                     break
 
