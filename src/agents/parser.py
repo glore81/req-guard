@@ -184,9 +184,11 @@ def run(
                     # Повторная выдача той же цитаты.
                     continue
 
-                raise ValueError(
-                    f"Parser: цитата не найдена: {quote!r}"
+                print(
+                    f"[parser] пропускаю требование — "
+                    f"цитата не найдена в документе: {quote!r}"
                 )
+                continue
 
             used_positions[quote] = position + len(quote)
 

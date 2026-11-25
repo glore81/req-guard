@@ -26,6 +26,7 @@ def read_document(path: str) -> Document:
         # ВАЖНО: текст НЕ очищаем и не склеиваем — для MD/TXT номер строки (line)
         # должен точно соответствовать строке в исходном файле (считаем с 1).
         text = p.read_text(encoding="utf-8")
+        text = text.replace("**", "")  # markdown-жирный мешает точному совпадению цитат LLM
         pages = [text]
     else:
         raise ValueError(f"Неподдерживаемый формат: {suffix} (нужен .pdf, .md или .txt)")
