@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import datetime
+import json
 import subprocess
 import sys
+from pathlib import Path
 
 from .agents import parser, questioner, requirement_checker, set_checker
 from .schema import Document, Result, RunPassport
@@ -25,6 +27,9 @@ def agent_version() -> str:
 def run_pipeline(doc: Document, llm=None, model_name: str = "stub") -> Result:
     """Запускает полный конвейер анализа требований."""
 
+    # Сквозной счётчик дефектов (D-001, D-002, ...)
+    defect_counter = [0]
+
     _log("Парсинг требований...")
     reqs = parser.run(doc, llm)
     _log(f"  Найдено требований: {len(reqs)}")
@@ -32,9 +37,8 @@ def run_pipeline(doc: Document, llm=None, model_name: str = "stub") -> Result:
     # Проверка каждого требования отдельно
     _log("Проверка отдельных требований...")
     req_defects = []
-    # Батчим, чтобы не упереться в rate limit бесплатного тарифа
     for i, r in enumerate(reqs, 1):
-        defects = requirement_checker.run(r, llm)
+        defects = requirement_checker.run(r, llm, defect_counter)
         req_defects.extend(defects)
         if i % 5 == 0:
             _log(f"  Проверено {i}/{len(reqs)}")
@@ -42,7 +46,7 @@ def run_pipeline(doc: Document, llm=None, model_name: str = "stub") -> Result:
 
     # Проверка набора требований (противоречия, дубли)
     _log("Проверка набора требований...")
-    set_defects = set_checker.run(reqs, llm)
+    set_defects = set_checker.run(reqs, llm, defect_counter)
     _log(f"  Найдено дефектов набора: {len(set_defects)}")
 
     # Генерация уточняющих вопросов
@@ -61,7 +65,7 @@ def run_pipeline(doc: Document, llm=None, model_name: str = "stub") -> Result:
 
     passport = RunPassport(
         document_name=doc.name,
-        date=datetime.date.today().isoformat(),
+        date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         model=model_name,
         agent_version=agent_version(),
     )

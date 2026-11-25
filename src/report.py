@@ -1,78 +1,186 @@
-"""Генератор отчёта на русском (человек 3). Структура — по ТЗ организаторов:
-паспорт, таблица ID, проверка каждого требования, проверка набора, итоги, вывод."""
+"""Генератор отчёта: Result (или dict из JSON) → report.md на русском.
+
+Может работать двумя способами:
+1. Из pipeline: build_report_from_result(Result) → str
+2. Из JSON-файла: build_report(dict) → str  или  python report.py result.json report.md
+
+Формат JSON — см. schema.py / sample.json.
+Серьёзность в JSON не передаётся: выводится из defect_type.
+"""
 from __future__ import annotations
 
-from .schema import CRITICAL_TYPES, DEFECT_TYPES, Defect, Result
+import argparse
+import json
+import subprocess
+from datetime import datetime
+
+DEFECT_TYPES = {
+    "ambiguity": "Неоднозначность",
+    "unverifiable": "Непроверяемость",
+    "incomplete": "Неполнота",
+    "design_decision": "Лишнее проектное решение",
+    "contradiction": "Противоречие",
+    "gap": "Пропуск",
+    "duplicate": "Дубль",
+    "other": "Прочее",
+}
+SEVERITY_BY_TYPE = {
+    "unverifiable": "critical",
+    "contradiction": "critical",
+    "incomplete": "critical",
+    "gap": "critical",
+    "ambiguity": "major",
+    "design_decision": "minor",
+    "duplicate": "minor",
+    "other": "major",
+}
+SEVERITY_RU = {"critical": "критичный", "major": "существенный", "minor": "незначительный"}
 
 
-def _label(t: str) -> str:
-    return DEFECT_TYPES.get(t, t)
+def git_version():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        return "не определена"
 
 
-def _is_critical(d: Defect) -> bool:
-    return d.severity == "critical" or d.defect_type in CRITICAL_TYPES
+def esc(text):
+    return str(text).replace("|", "\\|").replace("\n", " ")
 
 
-def build_report(r: Result) -> str:
-    all_defects = r.req_defects + r.set_defects
-    critical = [d for d in all_defects if _is_critical(d)]
-    out: list[str] = []
+def dtype(d):
+    return DEFECT_TYPES.get(d.get("defect_type"), d.get("defect_type", "?"))
 
-    p = r.passport
-    out += ["# Отчёт о проверке требований", "", "## 1. Паспорт запуска", "",
-            f"- Документ: {p.document_name}", f"- Дата: {p.date}",
-            f"- Модель: {p.model}", f"- Версия агента: {p.agent_version}", ""]
 
-    out += ["## 2. Соответствие ID", "", "| ID агента | ID в документе | Формулировка |", "|---|---|---|"]
-    for q in r.requirements:
-        out.append(f"| {q.id} | {q.doc_id or '— (присвоен агентом)'} | {q.text} |")
-    out.append("")
+def severity(d):
+    return SEVERITY_BY_TYPE.get(d.get("defect_type"), "major")
 
-    out += ["## 3. Проверка каждого требования", ""]
-    for q in r.requirements:
-        ds = [d for d in r.req_defects if d.req_id == q.id]
-        out.append(f"### {q.id}: {q.text}")
-        out.append(f"> {q.quote}")
+
+def is_critical(d):
+    return severity(d) == "critical"
+
+
+def is_set(d):
+    return d.get("req_id") == "SET"
+
+
+def affected(d):
+    if is_set(d):
+        return d.get("related_req_ids", [])
+    return [d["req_id"]] + d.get("related_req_ids", [])
+
+
+def quote_lines(d):
+    return [f"  - Цитата ({q['req_id']}, стр. {q.get('page', '—')}): «{q['quote']}»"
+            for q in d.get("quotes", [])]
+
+
+def build_report(data: dict) -> str:
+    """Генерация отчёта из JSON-словаря (формат sample.json)."""
+    meta = data.get("meta", {})
+    reqs = data.get("requirements", [])
+    defects = data.get("defects", [])
+    req_defects = [d for d in defects if not is_set(d)]
+    set_defects = [d for d in defects if is_set(d)]
+
+    by_req = {}
+    for d in req_defects:
+        by_req.setdefault(d["req_id"], []).append(d)
+
+    L = ["# Отчёт о проверке требований", ""]
+
+    # 1. Паспорт
+    L += ["## 1. Паспорт прогона", "",
+          f"- **Документ:** {meta.get('document', '—')}",
+          f"- **Дата:** {meta.get('date') or datetime.now().strftime('%Y-%m-%d %H:%M')}",
+          f"- **Модель:** {meta.get('model', '—')}",
+          f"- **Версия агента:** {meta.get('agent_version') or git_version()}", ""]
+
+    # 2. Таблица требований
+    L += ["## 2. Выделенные требования", "",
+          "| ID в отчёте | ID в документе | Стр. | Краткая формулировка | Цитата |",
+          "|---|---|---|---|---|"]
+    for r in reqs:
+        L.append(f"| {r['id']} | {esc(r.get('doc_id') or '(присвоен агентом)')} | "
+                 f"{r.get('page', '—')} | {esc(r.get('text', ''))} | {esc(r['quote'])} |")
+    L.append("")
+
+    # 3. Проверка отдельных требований
+    L += ["## 3. Проверка отдельных требований", ""]
+    for r in reqs:
+        ds = by_req.get(r["id"], [])
+        L += [f"### {r['id']} ({r.get('doc_id') or 'без номера'})", "", f"> {r['quote']}", ""]
         if not ds:
-            out.append("\nНарушений не найдено.\n")
+            L += ["Нарушений не найдено.", ""]
             continue
         for d in ds:
-            out += ["", f"- **{_label(d.defect_type)}** ({d.severity}), стр. {d.page}",
-                    f"  - Цитата: «{d.quote}»", f"  - Почему: {d.explanation}",
-                    f"  - Вопрос автору: {d.question}"]
-        out.append("")
+            L.append(f"- **{d.get('id', '?')}: {dtype(d)}** ({SEVERITY_RU[severity(d)]})")
+            L += quote_lines(d)
+            L.append(f"  - Почему это дефект: {d['explanation']}")
+        L.append("")
 
-    out += ["## 4. Проверка набора требований в целом", ""]
-    if not r.set_defects:
-        out.append("Нарушений на уровне набора не найдено.\n")
-    for d in r.set_defects:
-        rel = f" (связаны: {', '.join(d.related_req_ids)})" if d.related_req_ids else ""
-        out += [f"- **{_label(d.defect_type)}** ({d.severity}), стр. {d.page}{rel}",
-                f"  - Цитата: «{d.quote}»", f"  - Почему: {d.explanation}",
-                f"  - Вопрос автору: {d.question}"]
-    out.append("")
+    # 4. Проверка набора
+    L += ["## 4. Проверка набора требований", ""]
+    if not set_defects:
+        L += ["Нарушений на уровне набора не найдено.", ""]
+    for d in set_defects:
+        L.append(f"- **{d.get('id', '?')}: {dtype(d)}** ({SEVERITY_RU[severity(d)]}), "
+                 f"затронуты: {', '.join(affected(d))}")
+        L += quote_lines(d)
+        L.append(f"  - Почему это дефект: {d['explanation']}")
+    L.append("")
 
-    out += ["## 5. Итоги", "",
-            f"- Требований: {len(r.requirements)}",
-            f"- Нарушений: {len(all_defects)}",
-            f"- Критичных дефектов: {len(critical)}", ""]
-    for d in critical:
-        out.append(f"  - [{d.req_id}] {_label(d.defect_type)}: «{d.quote}»")
-    out.append("")
+    # 5. Уточняющие вопросы
+    L += ["## 5. Уточняющие вопросы автору документа", "",
+          "| № | Дефект | Требования | Тип | Вопрос |", "|---|---|---|---|---|"]
+    for i, d in enumerate(defects, 1):
+        L.append(f"| {i} | {d.get('id', '?')} | {', '.join(affected(d))} | {dtype(d)} | {esc(d.get('question', ''))} |")
+    L.append("")
 
-    out += ["## 6. Уточняющие вопросы к автору ТЗ", ""]
-    qs = [d for d in all_defects if d.question]
-    for i, d in enumerate(qs, start=1):
-        out.append(f"{i}. [{d.req_id}] {d.question}")
-    out.append("")
+    # 6. Сводка
+    crit = [d for d in defects if is_critical(d)]
+    L += ["## 6. Сводка", "",
+          f"- Требований выделено: **{len(reqs)}**",
+          f"- Требований с нарушениями: **{len(by_req)}**",
+          f"- Нарушений всего: **{len(defects)}** (на уровне набора: {len(set_defects)})",
+          f"- Критичных дефектов: **{len(crit)}**", ""]
+    if crit:
+        L += ["Критичные дефекты:", ""]
+        for d in crit:
+            q = "; ".join(f"«{x['quote']}» ({x['req_id']}, стр. {x.get('page', '—')})"
+                          for x in d.get("quotes", []))
+            L.append(f"- {d.get('id', '?')} — {dtype(d)}: {q}")
+        L.append("")
 
-    ready = not critical
-    out += ["## 7. Заключение", "",
-            ("Разработку и тестирование **можно начинать**." if ready else
-             "Разработку и тестирование **начинать рано**: сначала нужно устранить критичные дефекты."),
-            "", "Что исправить в первую очередь:" if critical else ""]
-    for d in critical[:5]:
-        out.append(f"- [{d.req_id}] {d.explanation}")
-    if r.dropped:
-        out += ["", f"_Служебно: верификатор отбросил {len(r.dropped)} находок без подтверждённой цитаты._"]
-    return "\n".join(out) + "\n"
+    # 7. Итог
+    L += ["## 7. Итог", ""]
+    if crit:
+        L += [f"**Начинать разработку и тестирование по этому документу нельзя** — "
+              f"найдено критичных дефектов: {len(crit)}.", "",
+              "Исправить в первую очередь:", ""]
+        for i, d in enumerate(crit, 1):
+            L.append(f"{i}. {d.get('id', '?')} ({', '.join(affected(d))}) — {dtype(d)}: {d['explanation']}")
+    else:
+        L.append("Критичных дефектов нет, разработку начинать можно; "
+                 "незначительные замечания желательно закрыть параллельно.")
+    L.append("")
+    return "\n".join(L)
+
+
+def build_report_from_result(result) -> str:
+    """Обёртка: принимает Result (dataclass), конвертирует в dict и строит отчёт."""
+    return build_report(result.to_json())
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("input_json")
+    ap.add_argument("output_md")
+    a = ap.parse_args()
+    with open(a.input_json, encoding="utf-8") as f:
+        data = json.load(f)
+    with open(a.output_md, "w", encoding="utf-8") as f:
+        f.write(build_report(data))
+    print(f"Отчёт записан: {a.output_md}")

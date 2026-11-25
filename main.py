@@ -1,12 +1,17 @@
-"""Запуск: python main.py <файл требований> <файл отчёта> [--dry-run]"""
+"""Запуск: python main.py <файл требований> <файл отчёта> [--dry-run]
+
+Сохраняет:
+  - <report>.md  — Markdown-отчёт
+  - <report>.json — промежуточный JSON (формат sample.json)
+"""
 import argparse
-import os
+import json
 import sys
 from pathlib import Path
 
 from src.pdf_reader import read_document
 from src.pipeline import run_pipeline
-from src.report import build_report
+from src.report import build_report_from_result
 
 
 def main() -> int:
@@ -30,9 +35,17 @@ def main() -> int:
         model = llm.model
 
     result = run_pipeline(doc, llm, model)
-    Path(args.report).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.report).write_text(build_report(result), encoding="utf-8")
-    print(f"Готово: {args.report}")
+
+    # Сохраняем отчёт (.md)
+    report_path = Path(args.report)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(build_report_from_result(result), encoding="utf-8")
+
+    # Сохраняем промежуточный JSON (.json рядом с .md)
+    json_path = report_path.with_suffix(".json")
+    json_path.write_text(json.dumps(result.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    print(f"Готово: {report_path}  +  {json_path}")
     return 0
 
 

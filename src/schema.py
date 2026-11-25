@@ -1,7 +1,17 @@
-"""Общая схема данных. Все трое участников опираются на неё — менять только по договорённости."""
+"""Общая схема данных. Все трое участников опираются на неё — менять только по договорённости.
+
+Формат JSON на выходе pipeline:
+  meta:         {document, date, model, agent_version}
+  requirements: [{id, doc_id|null, page, text, quote}]
+  defects:      [{id, req_id, related_req_ids, defect_type,
+                  quotes: [{req_id, page, quote}],
+                  explanation, question}]
+
+Серьёзность НЕ хранится в JSON — выводится из defect_type в report.py.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional
 
 # Типы дефектов (критерии ISO/IEC/IEEE 29148:2018 п. 5.2.5-5.2.6, IEEE 830 п. 4.3)
@@ -9,42 +19,72 @@ DEFECT_TYPES = {
     "ambiguity": "Неоднозначность",
     "unverifiable": "Непроверяемость",
     "contradiction": "Противоречие",
-    "incomplete": "Неполнота / пропуск",
+    "incomplete": "Неполнота",
     "design_decision": "Лишнее проектное решение",
-    "duplicate": "Дублирование",
+    "gap": "Пропуск",
+    "duplicate": "Дубль",
     "other": "Прочее",
 }
-SEVERITIES = ("critical", "major", "minor")
-# Критичные по ТЗ: непроверяемость, противоречие, неполнота
-CRITICAL_TYPES = {"unverifiable", "contradiction", "incomplete"}
+
+# Серьёзность определяется типом дефекта (не хранится отдельно)
+SEVERITY_BY_TYPE = {
+    "unverifiable": "critical",
+    "contradiction": "critical",
+    "incomplete": "critical",
+    "gap": "critical",
+    "ambiguity": "major",
+    "design_decision": "minor",
+    "duplicate": "minor",
+    "other": "major",
+}
+SEVERITY_RU = {
+    "critical": "критичный",
+    "major": "существенный",
+    "minor": "незначительный",
+}
 
 
 @dataclass
 class Requirement:
-    id: str                      # ID агента: R-001, R-002...
-    text: str                    # краткая формулировка
-    quote: str                   # дословная цитата из документа
-    doc_id: Optional[str] = None  # ID из самого документа, если есть
+    id: str                       # Сквозной ID агента: R-001, R-002...
+    text: str                     # Краткая формулировка (для таблицы соответствия)
+    quote: str                    # Дословная цитата из документа
+    doc_id: Optional[str] = None  # ID из самого документа (Ф-1, НФ-1...)
     page: Optional[int] = None
 
 
 @dataclass
+class Quote:
+    """Одна цитата-доказательство дефекта."""
+    req_id: str                   # К какому требованию относится
+    page: Optional[int] = None    # Страница (заполняет верификатор)
+    quote: str = ""               # Дословная цитата
+
+
+@dataclass
 class Defect:
-    req_id: str                  # ID требования или "SET" для проверки набора
-    defect_type: str             # ключ из DEFECT_TYPES
-    severity: str                # critical | major | minor
-    quote: str                   # дословная цитата-доказательство (обязательна!)
-    explanation: str             # почему это нарушение
-    question: str = ""           # уточняющий вопрос автору ТЗ
-    page: Optional[int] = None   # заполняет верификатор
-    related_req_ids: list[str] = field(default_factory=list)  # для противоречий
+    id: str                       # Сквозной ID дефекта: D-001, D-002...
+    req_id: str                   # ID требования или "SET" для дефекта набора
+    defect_type: str              # Ключ из DEFECT_TYPES
+    quotes: list[Quote] = field(default_factory=list)   # Цитаты-доказательства
+    explanation: str = ""         # Почему это дефект
+    question: str = ""            # Уточняющий вопрос автору ТЗ
+    related_req_ids: list[str] = field(default_factory=list)
+
+    @property
+    def severity(self) -> str:
+        return SEVERITY_BY_TYPE.get(self.defect_type, "major")
+
+    @property
+    def is_critical(self) -> bool:
+        return self.severity == "critical"
 
 
 @dataclass
 class Document:
     name: str
-    text: str                    # полный текст
-    pages: list[str]             # текст по страницам (для ссылок на место)
+    text: str                     # Полный текст
+    pages: list[str]              # Текст по страницам
 
 
 @dataclass
@@ -59,9 +99,34 @@ class RunPassport:
 class Result:
     passport: RunPassport
     requirements: list[Requirement]
-    req_defects: list[Defect]    # дефекты отдельных требований
-    set_defects: list[Defect]    # дефекты набора в целом
-    dropped: list[Defect] = field(default_factory=list)  # отброшены верификатором (цитата не найдена)
+    req_defects: list[Defect]     # Дефекты отдельных требований
+    set_defects: list[Defect]     # Дефекты набора в целом
+    dropped: list[Defect] = field(default_factory=list)
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    def to_json(self) -> dict:
+        """Сериализация в формат sample.json."""
+        return {
+            "meta": {
+                "document": self.passport.document_name,
+                "date": self.passport.date,
+                "model": self.passport.model,
+                "agent_version": self.passport.agent_version,
+            },
+            "requirements": [
+                {"id": r.id, "doc_id": r.doc_id, "page": r.page,
+                 "text": r.text, "quote": r.quote}
+                for r in self.requirements
+            ],
+            "defects": [
+                {
+                    "id": d.id, "req_id": d.req_id,
+                    "related_req_ids": d.related_req_ids,
+                    "defect_type": d.defect_type,
+                    "quotes": [{"req_id": q.req_id, "page": q.page, "quote": q.quote}
+                               for q in d.quotes],
+                    "explanation": d.explanation,
+                    "question": d.question,
+                }
+                for d in self.req_defects + self.set_defects
+            ],
+        }
