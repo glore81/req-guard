@@ -38,6 +38,13 @@ LONG_LIMIT_SEC = 120         # если Google просит ждать доль�
 MAX_MINUTE_WAIT_SEC = 60     # максимум ожидания при лимите в минуту
 
 GROQ_PREFIX = "groq:"
+# Бесплатный Groq считает в лимит «токенов в минуту» (8 000 у gpt-oss-120b)
+# и запрос, и ответ. Поэтому длину ответа задаём явно — сколько останется
+# после запроса, — а заведомо неподъёмный запрос даже не отправляем.
+GROQ_TPM = int(os.getenv("GROQ_TPM", "8000"))
+GROQ_MIN_ANSWER = 1500       # меньше — рассуждающей модели не хватит на ответ
+GROQ_MAX_ANSWER = 4096
+GROQ_CHARS_PER_TOKEN = 3.6   # оценка для русского текста: прошлый 413 — 31 600 символов ≈ 8 059 токенов
 # Groq в JSON-режиме обязан вернуть объект, поэтому просим обёртку {"result": ...}
 # и потом её снимаем — агенты получают тот же JSON, что и от Gemini.
 GROQ_SYSTEM = (
@@ -136,7 +143,17 @@ class LLM:
 
                 if getattr(e, "code", None) == 413:
                     too_big.add(model)
-                    print(f"[llm] {model}: запрос слишком большой для лимита модели, пробую другую")
+                    m = re.search(r"Requested (\d+)", str(e))
+                    size = f" ({m.group(1)} токенов)" if m else ""
+                    print(f"[llm] {model}: запрос слишком большой для лимита модели{size}, пробую другую")
+                    continue
+
+                if _is_unavailable_model(e):
+                    # Модель снята или недоступна этому ключу (например, новым
+                    # проектам Google не выдаёт gemini-2.5) — до конца прогона
+                    # её не трогаем, иначе цепочка крутилась бы на ней одной.
+                    self._bench[model] = float("inf")
+                    print(f"[llm] {model}: модель недоступна для этого ключа (404), больше её не пробую")
                     continue
 
                 if _is_daily_limit(e) or (wait is not None and wait > LONG_LIMIT_SEC):
@@ -203,6 +220,12 @@ class LLM:
             # max_retries=0: повторы и паузы делает наш call_json, а не библиотека.
             self._groq_client = Groq(api_key=self._groq_key, max_retries=0, timeout=180)
 
+        estimate = int((len(prompt) + len(GROQ_SYSTEM)) / GROQ_CHARS_PER_TOKEN)
+        answer = min(GROQ_MAX_ANSWER, GROQ_TPM - estimate)
+        if answer < GROQ_MIN_ANSWER:
+            # Не тратим запрос: Groq всё равно ответит 413.
+            raise ProviderError(413, f"413 Request too large: ~{estimate} tokens, Requested {estimate + GROQ_MIN_ANSWER}")
+
         try:
             resp = self._groq_client.chat.completions.create(
                 model=model,
@@ -212,6 +235,7 @@ class LLM:
                 ],
                 temperature=temperature,
                 response_format={"type": "json_object"},
+                max_completion_tokens=answer,
             )
         except APIStatusError as e:
             response = getattr(e, "response", None)
@@ -222,7 +246,12 @@ class LLM:
                 f"{e.status_code} {e.message}" + (f" Please retry in {retry}s." if retry else ""),
             ) from None
 
-        result = _parse_json(resp.choices[0].message.content)
+        choice = resp.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            # Ответ обрезан лимитом длины — у этой модели на такой запрос
+            # не хватает токенов; пусть ответит другая.
+            raise ProviderError(413, f"413 answer truncated at {answer} tokens")
+        result = _parse_json(choice.message.content)
         if isinstance(result, dict) and "result" in result:
             result = result["result"]
         return result
@@ -275,6 +304,16 @@ def _retry_delay(e: Exception) -> float | None:
         return float(m.group(1))
     m = re.search(r"retry in (\d+(?:\.\d+)?)s", str(e))
     return float(m.group(1)) if m else None
+
+
+def _is_unavailable_model(e: Exception) -> bool:
+    """Модель не найдена или больше не выдаётся (HTTP 404)."""
+    code = getattr(e, "code", None) or getattr(e, "status_code", None)
+    if code == 404:
+        return True
+    text = str(e).lower()
+    return "404" in text and ("not_found" in text or "not found" in text
+                              or "no longer available" in text)
 
 
 def _is_daily_limit(e: Exception) -> bool:

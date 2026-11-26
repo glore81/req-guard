@@ -196,3 +196,53 @@ def test_default_chain_follows_available_keys(llm_module, monkeypatch, gemini, g
     else:
         assert providers == {"groq"}
         assert set_llm.models[0] == "groq:openai/gpt-oss-120b"
+
+
+def test_groq_answer_budget_and_oversized_prompt(llm_module, monkeypatch):
+    """Длина ответа = остаток лимита в минуту; неподъёмный запрос
+    не отправляется, а сразу уходит к другой модели."""
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    sent = []
+    groq_server(monkeypatch, llm_module, [{"result": [1]}], sent)
+    llm = llm_module.LLM(model="groq:openai/gpt-oss-120b",
+                         fallbacks=["groq:openai/gpt-oss-20b"], use_cache=False)
+
+    assert llm.call_json("p" * 3600) == [1]
+    assert 1500 <= sent[0]["max_completion_tokens"] <= 4096
+
+    with pytest.raises(RuntimeError):
+        llm.call_json("p" * 40000)          # ~11 000 токенов — больше лимита
+    assert len(sent) == 1                   # в Groq ничего не отправлено
+
+
+class _GeminiGone(Exception):
+    def __init__(self):
+        super().__init__("404 NOT_FOUND. This model models/gemini-2.5-flash-lite "
+                         "is no longer available to new users.")
+        self.code = 404
+
+
+def test_unavailable_model_is_skipped_for_the_whole_run(llm_module, monkeypatch):
+    """404 «модель недоступна новым пользователям»: сразу к следующей модели
+    и больше к этой не возвращаемся."""
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    calls = []
+
+    def gone(self, model, contents, config):
+        calls.append(model)
+        raise _GeminiGone()
+
+    import google.genai as genai
+    monkeypatch.setattr(genai.Client(api_key="g").models.__class__, "generate_content", gone)
+    sent = []
+    groq_server(monkeypatch, llm_module, [{"result": [1]}, {"result": [2]}], sent)
+
+    llm = llm_module.LLM(model="gemini-2.5-flash-lite",
+                         fallbacks=["groq:openai/gpt-oss-120b"], use_cache=False)
+
+    assert llm.call_json("a") == [1]
+    assert llm.call_json("b") == [2]
+    assert calls == ["gemini-2.5-flash-lite"]   # вторым запросом её уже не пробовали
+    assert llm_module._sleeps == []
