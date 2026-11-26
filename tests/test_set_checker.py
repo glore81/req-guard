@@ -1,4 +1,3 @@
-
 import pytest
 
 from src.schema import Requirement
@@ -10,7 +9,7 @@ class MockLLM:
     def __init__(self, response):
         self.response = response
 
-    def call_json(self, prompt):
+    def call_json(self, prompt, **kwargs):
         return self.response
 
 

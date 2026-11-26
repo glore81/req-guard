@@ -1,4 +1,3 @@
-
 import pytest
 
 from src.schema import Defect, Quote
@@ -11,7 +10,7 @@ class MockLLM:
         self.response = response
         self.calls = 0
 
-    def call_json(self, prompt):
+    def call_json(self, prompt, **kwargs):
         self.calls += 1
         return self.response
 

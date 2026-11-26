@@ -1,7 +1,9 @@
-"""Оркестратор: парсер → проверка требований → проверка набора → вопросы → верификатор.
+"""Оркестратор: парсер → проверка требований → проверка набора → дубли → вопросы → верификатор.
 Участник 1: полная реализация (склейка всей цепочки).
 """
 from __future__ import annotations
+
+import os
 
 import datetime
 import json
@@ -9,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .agents import parser, questioner, requirement_checker, set_checker
+from .agents import duplicate_checker, parser, questioner, requirement_checker, set_checker
 from .schema import Document, Result, RunPassport
 from .verifier import verify
 
@@ -44,8 +46,24 @@ def run_pipeline(doc: Document, llm=None, model_name: str = "stub") -> Result:
 
     # Проверка набора требований (противоречия, дубли)
     _log("Проверка набора требований...")
-    set_defects = set_checker.run(reqs, llm, defect_counter, doc_text=doc.text)
+    # Противоречия ищет отдельная, более сильная модель (всего 2 запроса).
+    # По умолчанию — groq:openai/gpt-oss-120b; без ключа Groq — основная цепочка.
+    # Своя модель: SET_CHECKER_MODEL в .env; пустое значение — отключить.
+    set_llm = llm
+    if llm is not None:
+        from .llm import DEFAULT_SET_CHECKER_MODEL
+        set_model = os.getenv("SET_CHECKER_MODEL", DEFAULT_SET_CHECKER_MODEL).strip()
+        if set_model:
+            set_llm = llm.with_primary(set_model)
+        _log(f"  Модель для проверки набора: {set_llm.models[0]}")
+    set_defects = set_checker.run(reqs, set_llm, defect_counter, doc_text=doc.text)
     _log(f"  Найдено дефектов набора: {len(set_defects)}")
+
+    # Склейка дублей между агентами (без LLM) — до вопросов,
+    # чтобы не тратить запросы на повторяющиеся дефекты
+    _log("Поиск дублей...")
+    req_defects, set_defects, merged = duplicate_checker.run(req_defects, set_defects)
+    _log(f"  Склеено дублей: {merged}")
 
     # Генерация уточняющих вопросов
     _log("Генерация уточняющих вопросов...")

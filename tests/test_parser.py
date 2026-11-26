@@ -1,4 +1,3 @@
-
 import pytest
 
 from src.schema import Document
@@ -10,7 +9,7 @@ class MockLLM:
     def __init__(self, response):
         self.response = response
 
-    def call_json(self, prompt):
+    def call_json(self, prompt, **kwargs):
         return self.response
 
 
@@ -151,3 +150,41 @@ def test_preserve_duplicate_requirements():
     assert result[1].id == "R-002"
     assert result[0].line == 1
     assert result[1].line == 2
+
+
+def test_drop_service_parts_removes_review_checklist_and_passport_rows():
+    from src.agents.parser import _drop_service_parts
+    from src.schema import Document, Requirement
+
+    text = "\n".join([
+        "### Функциональные требования",                       # 1
+        "Клиент задаёт порог.",                                 # 2
+        "### Ревью требований",                                 # 3
+        "| Требование может быть протестировано | Да / Нет |",   # 4
+        "### Общие параметры",                                  # 5
+        "| **Author** | Школа тестирования |",                  # 6
+        "| **REST type** | GET |",                              # 7
+    ])
+    doc = Document(name="t.md", text=text, pages=[text], is_pdf=False)
+    reqs = [
+        Requirement(id="R-001", text="t", quote="Клиент задаёт порог.", line=2),
+        Requirement(id="R-002", text="t", quote="Требование может быть протестировано", line=4),
+        Requirement(id="R-003", text="t", quote="Author | Школа тестирования", line=6),
+        Requirement(id="R-004", text="t", quote="REST type | GET", line=7),
+    ]
+
+    kept = _drop_service_parts(reqs, doc)
+
+    assert [r.line for r in kept] == [2, 7]
+    assert [r.id for r in kept] == ["R-001", "R-002"]
+
+
+def test_drop_service_parts_keeps_business_section_named_approval():
+    from src.agents.parser import _drop_service_parts
+    from src.schema import Document, Requirement
+
+    text = "### Согласование заявки\nМенеджер согласует заявку в течение дня."
+    doc = Document(name="t.md", text=text, pages=[text], is_pdf=False)
+    reqs = [Requirement(id="R-001", text="t", quote="Менеджер согласует заявку в течение дня.", line=2)]
+
+    assert _drop_service_parts(reqs, doc) == reqs

@@ -11,7 +11,7 @@ class MockLLM:
         self.calls = 0
         self.prompts = []
 
-    def call_json(self, prompt):
+    def call_json(self, prompt, **kwargs):
         self.calls += 1
         self.prompts.append(prompt)
         return self.response

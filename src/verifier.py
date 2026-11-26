@@ -24,16 +24,22 @@ def find_page(doc: Document, quote: str) -> int | None:
     return None
 
 
-def find_line(doc: Document, quote: str) -> int | None:
-    """Находит номер строки (с 1) для MD/TXT-документа."""
+def find_line(doc: Document, quote: str, near: int | None = None) -> int | None:
+    """Находит номер строки (с 1) для MD/TXT-документа.
+    Если цитата встречается несколько раз (короткие фразы вроде «Текст»
+    или «Отображение нового графика»), берётся вхождение, ближайшее
+    к строке `near` — строке требования, к которому относится дефект.
+    Без подсказки — первое вхождение."""
     q = _norm(quote)
     if not q:
         return None
     lines = doc.text.split("\n")
-    # Ищем строку, содержащую цитату
-    for i, line in enumerate(lines, start=1):
-        if q in _norm(line):
-            return i
+    # Строки, содержащие цитату целиком
+    hits = [i for i, line in enumerate(lines, start=1) if q in _norm(line)]
+    if hits:
+        if near:
+            return min(hits, key=lambda i: (abs(i - near), i))
+        return hits[0]
     # Цитата может занимать несколько строк — ищем в скользящем окне
     full_norm = _norm(doc.text)
     if q in full_norm:
@@ -60,7 +66,7 @@ def verify(doc: Document, defects: list[Defect]) -> tuple[list[Defect], list[Def
                     q.line = None
                     verified_quotes.append(q)
             else:
-                line = find_line(doc, q.quote)
+                line = find_line(doc, q.quote, near=q.line)
                 if line is not None:
                     q.line = line
                     q.page = None
