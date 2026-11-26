@@ -1,9 +1,9 @@
 {
   "meta": {
     "document": "requirements.md",
-    "date": "2026-11-26 21:23",
-    "model": "gemini-3.5-flash-lite",
-    "agent_version": "2994918"
+    "date": "2026-11-26 22:57",
+    "model": "gemini-3.5-flash-lite ×12, groq:openai/gpt-oss-120b ×1",
+    "agent_version": "1a01a80-dirty"
   },
   "requirements": [
     {

@@ -246,3 +246,19 @@ def test_unavailable_model_is_skipped_for_the_whole_run(llm_module, monkeypatch)
     assert llm.call_json("b") == [2]
     assert calls == ["gemini-2.5-flash-lite"]   # вторым запросом её уже не пробовали
     assert llm_module._sleeps == []
+
+def test_used_models_lists_every_model_that_answered(llm_module, monkeypatch):
+    """В паспорт попадают все модели, которые реально отвечали, — и копии
+    with_primary (проверка набора) учитываются в общем списке."""
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    sent = []
+    groq_server(monkeypatch, llm_module, [{"result": [1]}, {"result": [2]}, {"result": [3]}], sent)
+    llm = llm_module.LLM(model="groq:openai/gpt-oss-120b",
+                         fallbacks=["groq:openai/gpt-oss-20b"], use_cache=False)
+
+    llm.call_json("a")
+    llm.call_json("b")
+    llm.with_primary("groq:openai/gpt-oss-20b").call_json("c")
+
+    assert llm.used_models() == "groq:openai/gpt-oss-120b ×2, groq:openai/gpt-oss-20b ×1"

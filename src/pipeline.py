@@ -82,7 +82,9 @@ def run_pipeline(doc: Document, llm=None, model_name: str = "stub") -> Result:
     passport = RunPassport(
         document_name=doc.name,
         date=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        model=model_name,
+        # Все модели, которые реально отвечали (обе цепочки, с числом ответов),
+        # а не только основная: проверку набора обычно делает Groq.
+        model=llm.used_models() if hasattr(llm, "used_models") else model_name,
         agent_version=agent_version(),
     )
     return Result(passport, reqs, req_defects, set_defects, total_dropped)

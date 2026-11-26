@@ -81,6 +81,8 @@ class LLM:
         self.model = primary  # для обратной совместимости (report.py читает .model)
         self.use_cache = use_cache
         self._bench: dict[str, float] = {}  # модель -> время, до которого её не трогаем
+        # Сколько ответов дала каждая модель за прогон (общий для копий with_primary)
+        self._used: dict[str, int] = {}
         gemini_key = api_key or os.getenv("GEMINI_API_KEY")
         self._groq_key = os.getenv("GROQ_API_KEY")
 
@@ -121,6 +123,7 @@ class LLM:
                 cache_file = self._cache_file(model, prompt, temperature)
                 if cache_file.exists():
                     self.model = model
+                    self._used[model] = self._used.get(model, 0) + 1
                     return json.loads(cache_file.read_text(encoding="utf-8"))
 
         last_err = None
@@ -136,6 +139,7 @@ class LLM:
                     cache_file.parent.mkdir(parents=True, exist_ok=True)
                     cache_file.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
                 self.model = model  # запоминаем, какая модель реально ответила
+                self._used[model] = self._used.get(model, 0) + 1
                 return result
             except Exception as e:  # лимиты, перегрузка сервера, сеть, невалидный JSON
                 last_err = e
@@ -184,6 +188,14 @@ class LLM:
             f"Если ниже 'per day' — кончился дневной лимит проекта, нужен ключ другого проекта. "
             f"Последняя ошибка: {last_err}"
         )
+
+    def used_models(self) -> str:
+        """Какие модели реально ответили за прогон и сколько раз —
+        для паспорта отчёта: «gemini-3.5-flash-lite ×14, groq:openai/gpt-oss-120b ×1»."""
+        if not self._used:
+            return self.model
+        ranked = sorted(self._used.items(), key=lambda kv: -kv[1])
+        return ", ".join(f"{m} ×{n}" for m, n in ranked)
 
     def with_primary(self, model: str) -> "LLM":
         """Копия обёртки, где `model` идёт первой, а остальная цепочка — следом.
